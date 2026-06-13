@@ -1,12 +1,12 @@
 FROM node:20-slim
 
-RUN npm install -g pnpm@9
+RUN npm install -g pnpm@10
 
 WORKDIR /app
 
 COPY . .
 
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --no-frozen-lockfile --ignore-scripts
 
 RUN pnpm --filter @workspace/api-server run build
 
