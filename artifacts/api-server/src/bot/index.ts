@@ -10,7 +10,7 @@ import {
   Role,
 } from "discord.js";
 import { logger } from "../lib/logger";
-import { db, promotionsTable } from "@workspace/db";
+import { db, pool, promotionsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 
 const token = process.env["DISCORD_BOT_TOKEN"];
@@ -73,7 +73,29 @@ async function registerCommands(rest: REST, appId: string, guildId: string) {
   logger.info({ guildId }, "Registered commands in guild");
 }
 
+async function runMigrations(): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS promotions (
+      id SERIAL PRIMARY KEY,
+      promotion_id TEXT NOT NULL UNIQUE,
+      type TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      target_user_id TEXT NOT NULL,
+      target_user_tag TEXT NOT NULL,
+      role_id TEXT NOT NULL,
+      role_name TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      signer_id TEXT NOT NULL,
+      signer_tag TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW() NOT NULL
+    )
+  `);
+  logger.info("Database migrations complete");
+}
+
 export async function startBot(): Promise<void> {
+  await runMigrations();
+
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
   });
