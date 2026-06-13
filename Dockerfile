@@ -1,18 +1,12 @@
 FROM node:20-slim
 
-RUN npm install -g pnpm
+RUN npm install -g pnpm@9
 
 WORKDIR /app
 
-COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
-COPY lib/db/package.json ./lib/db/
-COPY lib/api-spec/package.json ./lib/api-spec/
-COPY lib/api-zod/package.json ./lib/api-zod/
-COPY artifacts/api-server/package.json ./artifacts/api-server/
-
-RUN pnpm install --frozen-lockfile
-
 COPY . .
+
+RUN pnpm install --no-frozen-lockfile
 
 RUN pnpm --filter @workspace/api-server run build
 
