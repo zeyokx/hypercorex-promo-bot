@@ -97,6 +97,13 @@ const dropcodesCommand = new SlashCommandBuilder()
     o.setName("game").setDescription("Game name (e.g. HyperCore X)").setRequired(false),
   );
 
+const informationsendCommand = new SlashCommandBuilder()
+  .setName("informationsend")
+  .setDescription("Post the HyperCore X information & FAQ embeds")
+  .addChannelOption((o) =>
+    o.setName("channel").setDescription("Channel to post in (defaults to current)").setRequired(false),
+  );
+
 const allCommands = [
   promoteCommand,
   demoteCommand,
@@ -104,6 +111,7 @@ const allCommands = [
   rulesendCommand,
   announceCommand,
   dropcodesCommand,
+  informationsendCommand,
 ].map((c) => c.toJSON());
 
 async function registerCommands(rest: REST, appId: string, guildId: string) {
@@ -180,6 +188,7 @@ export async function startBot(): Promise<void> {
       else if (interaction.commandName === "rulesend") await handleRulesSend(interaction);
       else if (interaction.commandName === "announce") await handleAnnounce(interaction);
       else if (interaction.commandName === "dropcodes") await handleDropCodes(interaction);
+      else if (interaction.commandName === "informationsend") await handleInformationSend(interaction);
     } catch (err) {
       logger.error({ err, command: interaction.commandName }, "Command handler error");
     }
@@ -477,8 +486,101 @@ async function handleRulesSend(interaction: ChatInputCommandInteraction): Promis
     .setFooter({ text: "HyperCore X  •  Rules last updated" })
     .setTimestamp();
 
-  await target.send({ embeds: [headerEmbed, conductEmbed, punishEmbed, footerEmbed] });
+  const tosEmbed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle("🔗  Discord Terms of Service")
+    .setDescription(
+      "All members must also comply with Discord's official Terms of Service and Community Guidelines.\n\n" +
+      "📄 [Discord Terms of Service](https://discord.com/terms)\n" +
+      "📋 [Discord Community Guidelines](https://discord.com/guidelines)",
+    )
+    .setFooter({ text: "HyperCore X  •  Violations may result in immediate removal" });
+
+  await target.send({ embeds: [headerEmbed, conductEmbed, punishEmbed, tosEmbed, footerEmbed] });
   await interaction.editReply(`✅ Rules posted in ${target}.`);
+}
+
+async function handleInformationSend(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: 64 });
+
+  const target = await resolveTextChannel(interaction, "channel");
+  if (!target) {
+    await interaction.editReply("Could not resolve a text channel. Make sure I have access to it.");
+    return;
+  }
+
+  const CYAN = 0x00d4ff;
+  const DARK = 0x23272a;
+  const GOLD = 0xf5a623;
+
+  const THUMBNAIL = "https://raw.githubusercontent.com/zeyokx/hypercorex-promo-bot/main/assets/game-thumbnail.png";
+
+  const welcomeEmbed = new EmbedBuilder()
+    .setColor(CYAN)
+    .setTitle("⚡  Welcome to HyperCore X")
+    .setDescription(
+      "Your new home for competitive Roblox FPS action.\n" +
+      "Read everything below to get started — this server has something for everyone.",
+    )
+    .setImage(THUMBNAIL)
+    .setTimestamp();
+
+  const aboutEmbed = new EmbedBuilder()
+    .setColor(CYAN)
+    .setTitle("🎮  About HyperCore X")
+    .setDescription(
+      "HyperCore X isn't your typical shooter game. In this fast-paced, competitive first-person shooter, " +
+      "players fight in **1v1, 2v2, 3v3, 4v4, and 5v5 matches** using skill-based combat, slick weaponry, " +
+      "and special abilities to outwit their opponents.\n\n" +
+      "As you advance and move up the levels, you may develop new abilities, boost your health, and alter your playstyle. " +
+      "HyperCore X is suitable for both recreational and competitive grinders — with a beginner-friendly tutorial, " +
+      "group prizes, playtime rewards, fair growth, smooth animations, and simple gameplay.",
+    );
+
+  const faqEmbed = new EmbedBuilder()
+    .setColor(DARK)
+    .setTitle("❓  Frequently Asked Questions")
+    .addFields(
+      {
+        name: "🤝  How do I apply for a Partnership?",
+        value:
+          "Open a ticket and ask for **Partnerships**.\n" +
+          "Your server must have **at least 100 members** to be eligible.",
+        inline: false,
+      },
+      {
+        name: "🎟️  How do I claim a Code?",
+        value:
+          "Head to the **#codes** channel, find the latest code, then redeem it in-game.\n" +
+          "It's quick and easy — just copy and paste!",
+        inline: false,
+      },
+      {
+        name: "🚨  How do I report a Hacker?",
+        value:
+          "DM a **Manager** directly, or open a **Hacker Ticket** in the support section.",
+        inline: false,
+      },
+      {
+        name: "🔓  How do I appeal a Ban?",
+        value:
+          "Open an **Appeals Ticket** and explain your situation.\n" +
+          "⚠️ **Note:** Bans issued for exploiting are **not eligible** for appeal.",
+        inline: false,
+      },
+    );
+
+  const footerEmbed = new EmbedBuilder()
+    .setColor(GOLD)
+    .setDescription(
+      "If your question isn't listed above, open a support ticket and our team will assist you.\n" +
+      "We hope you enjoy your time in **HyperCore X** — good luck out there! ⚡",
+    )
+    .setFooter({ text: "HyperCore X  •  Information" })
+    .setTimestamp();
+
+  await target.send({ embeds: [welcomeEmbed, aboutEmbed, faqEmbed, footerEmbed] });
+  await interaction.editReply(`✅ Information posted in ${target}.`);
 }
 
 async function handleAnnounce(interaction: ChatInputCommandInteraction): Promise<void> {
