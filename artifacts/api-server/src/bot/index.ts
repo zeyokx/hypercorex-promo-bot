@@ -394,10 +394,9 @@ async function handleRulesSend(interaction: ChatInputCommandInteraction): Promis
 
   const headerEmbed = new EmbedBuilder()
     .setColor(GOLD)
-    .setTitle("📋  ROBLOX UNCOPYLOCKED BY HYPERCORE X  |  SERVER RULES")
+    .setTitle("📋  HYPERCORE X  |  SERVER RULES")
     .setDescription(
-      "Welcome to the most trusted hub for Roblox development, open source assets, and uncopylocked resources.\n" +
-      "By remaining in this server, you agree to abide by the directives outlined below.\n" +
+      "Welcome to HyperCore X. By remaining in this server, you agree to abide by the directives outlined below.\n" +
       "**Ignorance of these rules is not an excusable offense.**",
     )
     .setTimestamp();
@@ -475,7 +474,7 @@ async function handleRulesSend(interaction: ChatInputCommandInteraction): Promis
       "By participating in this server you confirm you have read and understood all rules above.\n" +
       "Staff decisions are final. For appeals contact a Senior Staff member directly.",
     )
-    .setFooter({ text: "Roblox Uncopylocked by HyperCore X  •  Rules last updated" })
+    .setFooter({ text: "HyperCore X  •  Rules last updated" })
     .setTimestamp();
 
   await target.send({ embeds: [headerEmbed, conductEmbed, punishEmbed, footerEmbed] });
