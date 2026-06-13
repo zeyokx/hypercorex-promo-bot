@@ -8,6 +8,8 @@ import {
   ChatInputCommandInteraction,
   GuildMember,
   Role,
+  TextChannel,
+  ChannelType,
 } from "discord.js";
 import { logger } from "../lib/logger";
 import { db, pool, promotionsTable } from "@workspace/db";
@@ -62,7 +64,14 @@ const viewpromoCommand = new SlashCommandBuilder()
     o.setName("member").setDescription("The staff member to look up").setRequired(true),
   );
 
-const allCommands = [promoteCommand, demoteCommand, viewpromoCommand].map((c) =>
+const rulesendCommand = new SlashCommandBuilder()
+  .setName("rulesend")
+  .setDescription("Post the server rules embeds")
+  .addChannelOption((o) =>
+    o.setName("channel").setDescription("Channel to send rules to (defaults to current)").setRequired(false),
+  );
+
+const allCommands = [promoteCommand, demoteCommand, viewpromoCommand, rulesendCommand].map((c) =>
   c.toJSON(),
 );
 
@@ -132,6 +141,7 @@ export async function startBot(): Promise<void> {
     if (interaction.commandName === "promote") await handlePromote(interaction);
     if (interaction.commandName === "demote") await handleDemote(interaction);
     if (interaction.commandName === "viewpromo") await handleViewPromo(interaction);
+    if (interaction.commandName === "rulesend") await handleRulesSend(interaction);
   });
 
   await client.login(token);
@@ -311,4 +321,117 @@ async function handleViewPromo(interaction: ChatInputCommandInteraction): Promis
     .setTimestamp();
 
   await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleRulesSend(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+
+  const channelOption = interaction.options.getChannel("channel");
+  let target: TextChannel;
+
+  if (channelOption) {
+    if (channelOption.type !== ChannelType.GuildText) {
+      await interaction.editReply("Please select a text channel.");
+      return;
+    }
+    target = channelOption as TextChannel;
+  } else {
+    if (!interaction.channel || interaction.channel.type !== ChannelType.GuildText) {
+      await interaction.editReply("This command can only be used in a text channel.");
+      return;
+    }
+    target = interaction.channel as TextChannel;
+  }
+
+  const GOLD = 0xf5a623;
+  const DARK = 0x23272a;
+
+  const headerEmbed = new EmbedBuilder()
+    .setColor(GOLD)
+    .setTitle("📋  ROBLOX UNCOPYLOCKED BY HYPERCORE X  |  SERVER RULES")
+    .setDescription(
+      "Welcome to the most trusted hub for Roblox development, open source assets, and uncopylocked resources.\n" +
+      "By remaining in this server, you agree to abide by the directives outlined below.\n" +
+      "**Ignorance of these rules is not an excusable offense.**",
+    )
+    .setTimestamp();
+
+  const conductEmbed = new EmbedBuilder()
+    .setColor(GOLD)
+    .setTitle("⚖️  SECTION I: CODE OF CONDUCT")
+    .addFields(
+      {
+        name: "1.1  Mutual Respect",
+        value:
+          "Do not engage in harassment, toxicity, cyberbullying, or targeted hate speech.\n" +
+          "Maintain a professional demeanour when interacting with developers and community members.",
+        inline: false,
+      },
+      {
+        name: "1.2  Safe For Work",
+        value:
+          "Your Discord status, nickname, avatar, and banner must remain Safe For Work at all times.",
+        inline: false,
+      },
+      {
+        name: "1.3  Language",
+        value:
+          "Keep conversations constructive. Excessive swearing disrupts the community environment.",
+        inline: false,
+      },
+    );
+
+  const punishEmbed = new EmbedBuilder()
+    .setColor(DARK)
+    .setTitle("🔨  SECTION II: PROHIBITED BEHAVIOUR & ESCALATIONS")
+    .setDescription("The following actions carry automatic punishments outlined below.")
+    .addFields(
+      {
+        name: "🔞  NSFW Content",
+        value:
+          "Posting, sharing, or linking any Not Safe For Work content of any kind.\n" +
+          ">>> 🔴 **Permanent Ban** — no appeal.",
+        inline: false,
+      },
+      {
+        name: "📍  Doxxing",
+        value:
+          "Sharing or threatening to share the personal information of any member.\n" +
+          ">>> 🔴 **Permanent Ban** — no appeal.",
+        inline: false,
+      },
+      {
+        name: "🤬  Excessive Swearing",
+        value:
+          "Repeated use of profane or offensive language directed at members or in public channels.\n" +
+          ">>> ⚠️ Warning → 🔇 Mute → 👢 Kick → 🔨 Ban",
+        inline: false,
+      },
+      {
+        name: "📨  Spam",
+        value:
+          "Flooding channels with repeated messages, images, emotes, or unsolicited links.\n" +
+          ">>> ⚠️ Warning → ⚠️ Warning 2 → 🔇 Mute",
+        inline: false,
+      },
+      {
+        name: "📣  Unsolicited Promotion",
+        value:
+          "Advertising servers, products, or services without explicit staff approval.\n" +
+          ">>> ⚠️ Warning → 🔇 Mute → 👢 Kick",
+        inline: false,
+      },
+    );
+
+  const footerEmbed = new EmbedBuilder()
+    .setColor(GOLD)
+    .setDescription(
+      "By participating in this server you confirm you have read and understood all rules above.\n" +
+      "Staff decisions are final. For appeals contact a Senior Staff member directly.",
+    )
+    .setFooter({ text: "Roblox Uncopylocked by HyperCore X  •  Rules last updated" })
+    .setTimestamp();
+
+  await target.send({ embeds: [headerEmbed, conductEmbed, punishEmbed, footerEmbed] });
+  await interaction.editReply(`✅ Rules posted in ${target}.`);
 }
