@@ -71,9 +71,40 @@ const rulesendCommand = new SlashCommandBuilder()
     o.setName("channel").setDescription("Channel to send rules to (defaults to current)").setRequired(false),
   );
 
-const allCommands = [promoteCommand, demoteCommand, viewpromoCommand, rulesendCommand].map((c) =>
-  c.toJSON(),
-);
+const announceCommand = new SlashCommandBuilder()
+  .setName("announce")
+  .setDescription("Send a styled announcement to a channel")
+  .addStringOption((o) =>
+    o.setName("message").setDescription("The announcement message").setRequired(true),
+  )
+  .addChannelOption((o) =>
+    o.setName("channel").setDescription("Channel to post in (defaults to current)").setRequired(false),
+  )
+  .addStringOption((o) =>
+    o.setName("title").setDescription("Announcement title (optional)").setRequired(false),
+  );
+
+const dropcodesCommand = new SlashCommandBuilder()
+  .setName("dropcodes")
+  .setDescription("Drop game codes with a styled embed")
+  .addStringOption((o) =>
+    o.setName("codes").setDescription("The codes to drop (one per line or comma-separated)").setRequired(true),
+  )
+  .addChannelOption((o) =>
+    o.setName("channel").setDescription("Channel to post in (defaults to current)").setRequired(false),
+  )
+  .addStringOption((o) =>
+    o.setName("game").setDescription("Game name (e.g. HyperCore X)").setRequired(false),
+  );
+
+const allCommands = [
+  promoteCommand,
+  demoteCommand,
+  viewpromoCommand,
+  rulesendCommand,
+  announceCommand,
+  dropcodesCommand,
+].map((c) => c.toJSON());
 
 async function registerCommands(rest: REST, appId: string, guildId: string) {
   await rest.put(Routes.applicationGuildCommands(appId, guildId), {
@@ -147,6 +178,8 @@ export async function startBot(): Promise<void> {
       else if (interaction.commandName === "demote") await handleDemote(interaction);
       else if (interaction.commandName === "viewpromo") await handleViewPromo(interaction);
       else if (interaction.commandName === "rulesend") await handleRulesSend(interaction);
+      else if (interaction.commandName === "announce") await handleAnnounce(interaction);
+      else if (interaction.commandName === "dropcodes") await handleDropCodes(interaction);
     } catch (err) {
       logger.error({ err, command: interaction.commandName }, "Command handler error");
     }
@@ -331,24 +364,29 @@ async function handleViewPromo(interaction: ChatInputCommandInteraction): Promis
   await interaction.editReply({ embeds: [embed] });
 }
 
+async function resolveTextChannel(
+  interaction: ChatInputCommandInteraction,
+  optionName: string,
+): Promise<TextChannel | null> {
+  if (!interaction.guild) return null;
+  const picked = interaction.options.getChannel(optionName);
+  const targetId = picked ? picked.id : interaction.channelId;
+  try {
+    const ch = await interaction.guild.channels.fetch(targetId);
+    if (!ch || !ch.isTextBased()) return null;
+    return ch as TextChannel;
+  } catch {
+    return null;
+  }
+}
+
 async function handleRulesSend(interaction: ChatInputCommandInteraction): Promise<void> {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: 64 });
 
-  const channelOption = interaction.options.getChannel("channel");
-  let target: TextChannel;
-
-  if (channelOption) {
-    if (channelOption.type !== ChannelType.GuildText) {
-      await interaction.editReply("Please select a text channel.");
-      return;
-    }
-    target = channelOption as TextChannel;
-  } else {
-    if (!interaction.channel || interaction.channel.type !== ChannelType.GuildText) {
-      await interaction.editReply("This command can only be used in a text channel.");
-      return;
-    }
-    target = interaction.channel as TextChannel;
+  const target = await resolveTextChannel(interaction, "channel");
+  if (!target) {
+    await interaction.editReply("Could not resolve a text channel. Make sure I have access to it.");
+    return;
   }
 
   const GOLD = 0xf5a623;
@@ -442,4 +480,88 @@ async function handleRulesSend(interaction: ChatInputCommandInteraction): Promis
 
   await target.send({ embeds: [headerEmbed, conductEmbed, punishEmbed, footerEmbed] });
   await interaction.editReply(`✅ Rules posted in ${target}.`);
+}
+
+async function handleAnnounce(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: 64 });
+
+  const target = await resolveTextChannel(interaction, "channel");
+  if (!target) {
+    await interaction.editReply("Could not resolve a text channel. Make sure I have access to it.");
+    return;
+  }
+
+  const message = interaction.options.getString("message", true);
+  const title = interaction.options.getString("title") ?? "📢  Announcement";
+  const signer = interaction.user;
+  const signerMember = interaction.guild
+    ? await interaction.guild.members.fetch(signer.id).catch(() => null)
+    : null;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(title)
+    .setDescription(message)
+    .setAuthor({
+      name: signerMember?.displayName ?? signer.username,
+      iconURL: signerMember?.displayAvatarURL() ?? signer.displayAvatarURL(),
+    })
+    .setFooter({ text: "HyperCore X" })
+    .setTimestamp();
+
+  await target.send({ content: "@everyone", embeds: [embed] });
+  await interaction.editReply(`✅ Announcement sent to ${target}.`);
+}
+
+async function handleDropCodes(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: 64 });
+
+  const target = await resolveTextChannel(interaction, "channel");
+  if (!target) {
+    await interaction.editReply("Could not resolve a text channel. Make sure I have access to it.");
+    return;
+  }
+
+  const codes = interaction.options.getString("codes", true);
+  const game = interaction.options.getString("game") ?? "HyperCore X";
+
+  const codeLines = codes
+    .split(/[\n,]+/)
+    .map((c) => c.trim())
+    .filter(Boolean)
+    .map((c) => `\`${c}\``)
+    .join("\n");
+
+  const TWITTER_BLUE = 0x1da1f2;
+  const YOUTUBE_RED = 0xff0000;
+
+  const twitterEmbed = new EmbedBuilder()
+    .setColor(TWITTER_BLUE)
+    .setAuthor({
+      name: "Twitter / X",
+      iconURL: "https://abs.twimg.com/icons/apple-touch-icon-192x192.png",
+    })
+    .setTitle(`🎮  CODES JUST DROPPED — ${game}`)
+    .setDescription(
+      `New codes are live! Redeem them in-game before they expire.\n\n${codeLines}`,
+    )
+    .setFooter({ text: "HyperCore X  •  Follow us on Twitter for the latest drops" })
+    .setTimestamp();
+
+  const youtubeEmbed = new EmbedBuilder()
+    .setColor(YOUTUBE_RED)
+    .setAuthor({
+      name: "YouTube",
+      iconURL: "https://www.gstatic.com/youtube/img/branding/favicon/favicon_144x144.png",
+    })
+    .setTitle("▶️  Watch the code reveal on YouTube")
+    .setDescription(
+      "Don't miss our latest video — code reveals, tutorials, and more!\n" +
+      "🔔 **Subscribe and hit the bell** so you never miss a drop.",
+    )
+    .setFooter({ text: "HyperCore X  •  YouTube" })
+    .setTimestamp();
+
+  await target.send({ content: "@everyone", embeds: [twitterEmbed, youtubeEmbed] });
+  await interaction.editReply(`✅ Codes dropped in ${target}.`);
 }
