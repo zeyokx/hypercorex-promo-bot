@@ -136,12 +136,20 @@ export async function startBot(): Promise<void> {
     }
   });
 
+  client.on("error", (err) => {
+    logger.error({ err }, "Discord client error");
+  });
+
   client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
-    if (interaction.commandName === "promote") await handlePromote(interaction);
-    if (interaction.commandName === "demote") await handleDemote(interaction);
-    if (interaction.commandName === "viewpromo") await handleViewPromo(interaction);
-    if (interaction.commandName === "rulesend") await handleRulesSend(interaction);
+    try {
+      if (interaction.commandName === "promote") await handlePromote(interaction);
+      else if (interaction.commandName === "demote") await handleDemote(interaction);
+      else if (interaction.commandName === "viewpromo") await handleViewPromo(interaction);
+      else if (interaction.commandName === "rulesend") await handleRulesSend(interaction);
+    } catch (err) {
+      logger.error({ err, command: interaction.commandName }, "Command handler error");
+    }
   });
 
   await client.login(token);
