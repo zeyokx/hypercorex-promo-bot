@@ -25,7 +25,11 @@ app.listen(port, (err) => {
   logger.info({ port }, "Server listening");
 });
 
-startBot().catch((err) => {
-  logger.error({ err }, "Discord bot failed to start");
-  process.exit(1);
-});
+if (process.env["NODE_ENV"] === "production") {
+  startBot().catch((err) => {
+    logger.error({ err }, "Discord bot failed to start");
+    process.exit(1);
+  });
+} else {
+  logger.info("Development mode — bot disabled to avoid dual-instance conflicts with Railway");
+}
