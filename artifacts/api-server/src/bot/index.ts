@@ -10,6 +10,10 @@ import {
   Role,
   TextChannel,
   ChannelType,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
 } from "discord.js";
 import { logger } from "../lib/logger";
 import { db, pool, promotionsTable } from "@workspace/db";
@@ -104,6 +108,16 @@ const informationsendCommand = new SlashCommandBuilder()
     o.setName("channel").setDescription("Channel to post in (defaults to current)").setRequired(false),
   );
 
+const sayCommand = new SlashCommandBuilder()
+  .setName("say")
+  .setDescription("Send a message publicly as the bot (with confirmation)")
+  .addStringOption((o) =>
+    o.setName("text").setDescription("The message to send").setRequired(true),
+  )
+  .addChannelOption((o) =>
+    o.setName("channel").setDescription("Channel to send to (defaults to current)").setRequired(false),
+  );
+
 const allCommands = [
   promoteCommand,
   demoteCommand,
@@ -112,6 +126,7 @@ const allCommands = [
   announceCommand,
   dropcodesCommand,
   informationsendCommand,
+  sayCommand,
 ].map((c) => c.toJSON());
 
 async function registerCommands(rest: REST, appId: string, guildId: string) {
@@ -189,6 +204,7 @@ export async function startBot(): Promise<void> {
       else if (interaction.commandName === "announce") await handleAnnounce(interaction);
       else if (interaction.commandName === "dropcodes") await handleDropCodes(interaction);
       else if (interaction.commandName === "informationsend") await handleInformationSend(interaction);
+      else if (interaction.commandName === "say") await handleSay(interaction);
     } catch (err) {
       logger.error({ err, command: interaction.commandName }, "Command handler error");
     }
@@ -665,4 +681,73 @@ async function handleDropCodes(interaction: ChatInputCommandInteraction): Promis
 
   await target.send({ content: "@everyone", embeds: [twitterEmbed, youtubeEmbed] });
   await interaction.editReply(`✅ Codes dropped in ${target}.`);
+}
+
+async function handleSay(interaction: ChatInputCommandInteraction): Promise<void> {
+  const text = interaction.options.getString("text", true);
+  const channelOption = interaction.options.getChannel("channel");
+  const targetId = channelOption ? channelOption.id : interaction.channelId;
+
+  const confirm = new ButtonBuilder()
+    .setCustomId("say_confirm")
+    .setLabel("✅  Send it")
+    .setStyle(ButtonStyle.Success);
+
+  const cancel = new ButtonBuilder()
+    .setCustomId("say_cancel")
+    .setLabel("❌  Cancel")
+    .setStyle(ButtonStyle.Danger);
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(confirm, cancel);
+
+  const preview = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle("📨  Preview — Are you sure?")
+    .setDescription(`\`\`\`${text}\`\`\``)
+    .addFields({ name: "Sending to", value: `<#${targetId}>`, inline: true })
+    .setFooter({ text: "Only you can see this — confirm or cancel below" });
+
+  const reply = await interaction.reply({
+    embeds: [preview],
+    components: [row],
+    flags: 64,
+  });
+
+  try {
+    const button = await reply.awaitMessageComponent({
+      componentType: ComponentType.Button,
+      filter: (i) => i.user.id === interaction.user.id,
+      time: 30_000,
+    });
+
+    if (button.customId === "say_confirm") {
+      const target = await resolveTextChannel(interaction, "channel");
+      if (!target) {
+        await button.update({
+          content: "❌ Could not find that channel.",
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      await target.send(text);
+      await button.update({
+        content: `✅ Message sent to ${target}.`,
+        embeds: [],
+        components: [],
+      });
+    } else {
+      await button.update({
+        content: "❌ Cancelled — message was not sent.",
+        embeds: [],
+        components: [],
+      });
+    }
+  } catch {
+    await interaction.editReply({
+      content: "⏱️ Timed out — no confirmation received. Message was not sent.",
+      embeds: [],
+      components: [],
+    });
+  }
 }
