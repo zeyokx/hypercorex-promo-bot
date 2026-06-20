@@ -194,9 +194,29 @@ export async function startBot(): Promise<void> {
     logger.error({ err }, "Discord client error");
   });
 
+  const pendingSay = new Map<string, { text: string; channelId: string }>();
+
   client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
     try {
+      if (interaction.isButton()) {
+        const pending = pendingSay.get(interaction.message.id);
+        if (!pending) return;
+        pendingSay.delete(interaction.message.id);
+
+        if (interaction.customId === "say_confirm") {
+          const guild = interaction.guild;
+          if (!guild) { await interaction.update({ content: "❌ No guild found.", embeds: [], components: [] }); return; }
+          const ch = await guild.channels.fetch(pending.channelId).catch(() => null);
+          if (!ch || !ch.isTextBased()) { await interaction.update({ content: "❌ Channel not found.", embeds: [], components: [] }); return; }
+          await (ch as TextChannel).send(pending.text);
+          await interaction.update({ content: `✅ Message sent to <#${pending.channelId}>.`, embeds: [], components: [] });
+        } else {
+          await interaction.update({ content: "❌ Cancelled — message was not sent.", embeds: [], components: [] });
+        }
+        return;
+      }
+
+      if (!interaction.isChatInputCommand()) return;
       if (interaction.commandName === "promote") await handlePromote(interaction);
       else if (interaction.commandName === "demote") await handleDemote(interaction);
       else if (interaction.commandName === "viewpromo") await handleViewPromo(interaction);
@@ -204,9 +224,9 @@ export async function startBot(): Promise<void> {
       else if (interaction.commandName === "announce") await handleAnnounce(interaction);
       else if (interaction.commandName === "dropcodes") await handleDropCodes(interaction);
       else if (interaction.commandName === "informationsend") await handleInformationSend(interaction);
-      else if (interaction.commandName === "say") await handleSay(interaction);
+      else if (interaction.commandName === "say") await handleSay(interaction, pendingSay);
     } catch (err) {
-      logger.error({ err, command: interaction.commandName }, "Command handler error");
+      logger.error({ err }, "Interaction handler error");
     }
   });
 
@@ -683,7 +703,10 @@ async function handleDropCodes(interaction: ChatInputCommandInteraction): Promis
   await interaction.editReply(`✅ Codes dropped in ${target}.`);
 }
 
-async function handleSay(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleSay(
+  interaction: ChatInputCommandInteraction,
+  pendingSay: Map<string, { text: string; channelId: string }>,
+): Promise<void> {
   const text = interaction.options.getString("text", true);
   const channelOption = interaction.options.getChannel("channel");
   const targetId = channelOption ? channelOption.id : interaction.channelId;
@@ -703,7 +726,7 @@ async function handleSay(interaction: ChatInputCommandInteraction): Promise<void
   const preview = new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle("📨  Preview — Are you sure?")
-    .setDescription(`\`\`\`${text}\`\`\``)
+    .setDescription(`>>> ${text}`)
     .addFields({ name: "Sending to", value: `<#${targetId}>`, inline: true })
     .setFooter({ text: "Only you can see this — confirm or cancel below" });
 
@@ -711,43 +734,17 @@ async function handleSay(interaction: ChatInputCommandInteraction): Promise<void
     embeds: [preview],
     components: [row],
     flags: 64,
+    withResponse: true,
   });
 
-  try {
-    const button = await reply.awaitMessageComponent({
-      componentType: ComponentType.Button,
-      filter: (i) => i.user.id === interaction.user.id,
-      time: 30_000,
-    });
-
-    if (button.customId === "say_confirm") {
-      const target = await resolveTextChannel(interaction, "channel");
-      if (!target) {
-        await button.update({
-          content: "❌ Could not find that channel.",
-          embeds: [],
-          components: [],
-        });
-        return;
+  const msgId = reply.resource?.message?.id;
+  if (msgId) {
+    pendingSay.set(msgId, { text, channelId: targetId });
+    setTimeout(() => {
+      if (pendingSay.has(msgId)) {
+        pendingSay.delete(msgId);
+        interaction.editReply({ content: "⏱️ Timed out — buttons expired.", embeds: [], components: [] }).catch(() => {});
       }
-      await target.send(text);
-      await button.update({
-        content: `✅ Message sent to ${target}.`,
-        embeds: [],
-        components: [],
-      });
-    } else {
-      await button.update({
-        content: "❌ Cancelled — message was not sent.",
-        embeds: [],
-        components: [],
-      });
-    }
-  } catch {
-    await interaction.editReply({
-      content: "⏱️ Timed out — no confirmation received. Message was not sent.",
-      embeds: [],
-      components: [],
-    });
+    }, 60_000);
   }
 }
