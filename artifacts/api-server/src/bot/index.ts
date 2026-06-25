@@ -16,11 +16,12 @@ import {
   ComponentType,
 } from "discord.js";
 import { logger } from "../lib/logger";
-import { db, pool, promotionsTable } from "@workspace/db";
+import { db, pool, promotionsTable, whitelistTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 
 const token = process.env["DISCORD_BOT_TOKEN"];
 const targetGuildId = process.env["DISCORD_GUILD_ID"];
+const ownerId = process.env["OWNER_ID"];
 
 if (!token) {
   throw new Error("DISCORD_BOT_TOKEN environment variable is required.");
@@ -118,6 +119,29 @@ const sayCommand = new SlashCommandBuilder()
     o.setName("channel").setDescription("Channel to send to (defaults to current)").setRequired(false),
   );
 
+const whitelistCommand = new SlashCommandBuilder()
+  .setName("whitelist")
+  .setDescription("Manage who can use bot commands")
+  .addSubcommand((sub) =>
+    sub
+      .setName("add")
+      .setDescription("Add a user to the whitelist")
+      .addUserOption((o) =>
+        o.setName("user").setDescription("User to whitelist").setRequired(true),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("remove")
+      .setDescription("Remove a user from the whitelist")
+      .addUserOption((o) =>
+        o.setName("user").setDescription("User to remove").setRequired(true),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub.setName("list").setDescription("List all whitelisted users"),
+  );
+
 const allCommands = [
   promoteCommand,
   demoteCommand,
@@ -127,6 +151,7 @@ const allCommands = [
   dropcodesCommand,
   informationsendCommand,
   sayCommand,
+  whitelistCommand,
 ].map((c) => c.toJSON());
 
 async function registerCommands(rest: REST, appId: string, guildId: string) {
@@ -153,7 +178,27 @@ async function runMigrations(): Promise<void> {
       created_at TIMESTAMP DEFAULT NOW() NOT NULL
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS whitelist (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      added_by_id TEXT NOT NULL,
+      added_by_tag TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW() NOT NULL
+    )
+  `);
   logger.info("Database migrations complete");
+}
+
+async function isWhitelisted(userId: string, guildId: string): Promise<boolean> {
+  if (ownerId && userId === ownerId) return true;
+  const rows = await db
+    .select()
+    .from(whitelistTable)
+    .where(and(eq(whitelistTable.userId, userId), eq(whitelistTable.guildId, guildId)))
+    .limit(1);
+  return rows.length > 0;
 }
 
 export async function startBot(): Promise<void> {
@@ -217,6 +262,16 @@ export async function startBot(): Promise<void> {
       }
 
       if (!interaction.isChatInputCommand()) return;
+
+      const allowed = await isWhitelisted(interaction.user.id, interaction.guildId ?? "");
+      if (!allowed) {
+        await interaction.reply({
+          content: "🔒 You are not whitelisted to use bot commands.",
+          flags: 64,
+        });
+        return;
+      }
+
       if (interaction.commandName === "promote") await handlePromote(interaction);
       else if (interaction.commandName === "demote") await handleDemote(interaction);
       else if (interaction.commandName === "viewpromo") await handleViewPromo(interaction);
@@ -225,6 +280,7 @@ export async function startBot(): Promise<void> {
       else if (interaction.commandName === "dropcodes") await handleDropCodes(interaction);
       else if (interaction.commandName === "informationsend") await handleInformationSend(interaction);
       else if (interaction.commandName === "say") await handleSay(interaction, pendingSay);
+      else if (interaction.commandName === "whitelist") await handleWhitelist(interaction);
     } catch (err) {
       logger.error({ err }, "Interaction handler error");
     }
@@ -746,5 +802,83 @@ async function handleSay(
         interaction.editReply({ content: "⏱️ Timed out — buttons expired.", embeds: [], components: [] }).catch(() => {});
       }
     }, 60_000);
+  }
+}
+
+async function handleWhitelist(interaction: ChatInputCommandInteraction): Promise<void> {
+  const sub = interaction.options.getSubcommand();
+  const guildId = interaction.guildId ?? "";
+
+  if (sub === "add") {
+    const target = interaction.options.getUser("user", true);
+    const exists = await db
+      .select()
+      .from(whitelistTable)
+      .where(and(eq(whitelistTable.userId, target.id), eq(whitelistTable.guildId, guildId)))
+      .limit(1);
+
+    if (exists.length > 0) {
+      await interaction.reply({ content: `⚠️ ${target} is already whitelisted.`, flags: 64 });
+      return;
+    }
+
+    await db.insert(whitelistTable).values({
+      userId: target.id,
+      guildId,
+      addedById: interaction.user.id,
+      addedByTag: interaction.user.tag,
+    });
+
+    const embed = new EmbedBuilder()
+      .setColor(0x57f287)
+      .setTitle("✅ Whitelisted")
+      .setDescription(`${target} has been added to the whitelist and can now use bot commands.`)
+      .addFields({ name: "Added by", value: `${interaction.user}`, inline: true })
+      .setTimestamp();
+
+    await interaction.reply({ embeds: [embed], flags: 64 });
+  } else if (sub === "remove") {
+    const target = interaction.options.getUser("user", true);
+
+    if (ownerId && target.id === ownerId) {
+      await interaction.reply({ content: "❌ You cannot remove the bot owner from the whitelist.", flags: 64 });
+      return;
+    }
+
+    const deleted = await db
+      .delete(whitelistTable)
+      .where(and(eq(whitelistTable.userId, target.id), eq(whitelistTable.guildId, guildId)))
+      .returning();
+
+    if (deleted.length === 0) {
+      await interaction.reply({ content: `⚠️ ${target} is not in the whitelist.`, flags: 64 });
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(0xed4245)
+      .setTitle("🚫 Removed from whitelist")
+      .setDescription(`${target} has been removed and can no longer use bot commands.`)
+      .addFields({ name: "Removed by", value: `${interaction.user}`, inline: true })
+      .setTimestamp();
+
+    await interaction.reply({ embeds: [embed], flags: 64 });
+  } else {
+    const rows = await db
+      .select()
+      .from(whitelistTable)
+      .where(eq(whitelistTable.guildId, guildId));
+
+    const lines = rows.map((r) => `<@${r.userId}>`).join("\n") || "No users whitelisted yet.";
+    const ownerLine = ownerId ? `\n\n🔑 **Owner** (via env): <@${ownerId}>` : "";
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle("📋 Whitelisted Users")
+      .setDescription(lines + ownerLine)
+      .setFooter({ text: `${rows.length} user${rows.length !== 1 ? "s" : ""} whitelisted` })
+      .setTimestamp();
+
+    await interaction.reply({ embeds: [embed], flags: 64 });
   }
 }
