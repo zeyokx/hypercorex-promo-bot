@@ -22,6 +22,7 @@ import { eq, and } from "drizzle-orm";
 const token = process.env["DISCORD_BOT_TOKEN"];
 const targetGuildId = process.env["DISCORD_GUILD_ID"];
 const ownerId = process.env["OWNER_ID"];
+const backupLink = process.env["BACKUP_LINK"] ?? null;
 
 if (!token) {
   throw new Error("DISCORD_BOT_TOKEN environment variable is required.");
@@ -119,6 +120,17 @@ const sayCommand = new SlashCommandBuilder()
     o.setName("channel").setDescription("Channel to send to (defaults to current)").setRequired(false),
   );
 
+const dmallCommand = new SlashCommandBuilder()
+  .setName("dmall")
+  .setDescription("Send a DM to every non-bot member in the server")
+  .addStringOption((o) =>
+    o.setName("message").setDescription("The message to DM every member").setRequired(true),
+  );
+
+const backupCommand = new SlashCommandBuilder()
+  .setName("backup")
+  .setDescription("Send the backup server invite link");
+
 const whitelistCommand = new SlashCommandBuilder()
   .setName("whitelist")
   .setDescription("Manage who can use bot commands")
@@ -152,6 +164,8 @@ const allCommands = [
   informationsendCommand,
   sayCommand,
   whitelistCommand,
+  dmallCommand,
+  backupCommand,
 ].map((c) => c.toJSON());
 
 async function registerCommands(rest: REST, appId: string, guildId: string) {
@@ -281,6 +295,8 @@ export async function startBot(): Promise<void> {
       else if (interaction.commandName === "informationsend") await handleInformationSend(interaction);
       else if (interaction.commandName === "say") await handleSay(interaction, pendingSay);
       else if (interaction.commandName === "whitelist") await handleWhitelist(interaction);
+      else if (interaction.commandName === "dmall") await handleDmAll(interaction);
+      else if (interaction.commandName === "backup") await handleBackup(interaction);
     } catch (err) {
       logger.error({ err }, "Interaction handler error");
     }
@@ -881,4 +897,74 @@ async function handleWhitelist(interaction: ChatInputCommandInteraction): Promis
 
     await interaction.reply({ embeds: [embed], flags: 64 });
   }
+}
+
+async function handleDmAll(interaction: ChatInputCommandInteraction): Promise<void> {
+  const message = interaction.options.getString("message", true);
+  const guild = interaction.guild;
+  if (!guild) { await interaction.reply({ content: "❌ Must be used in a server.", flags: 64 }); return; }
+
+  await interaction.deferReply({ flags: 64 });
+
+  let members;
+  try {
+    members = await guild.members.fetch();
+  } catch {
+    await interaction.editReply("❌ Failed to fetch members. Make sure the bot has the **Server Members Intent** enabled.");
+    return;
+  }
+
+  const targets = members.filter((m) => !m.user.bot);
+  let sent = 0, failed = 0;
+
+  await interaction.editReply(
+    `📨 Sending DMs to **${targets.size}** members… (0 / ${targets.size})`,
+  );
+
+  for (const [, member] of targets) {
+    try {
+      await member.send(message);
+      sent++;
+    } catch {
+      failed++;
+    }
+    if ((sent + failed) % 10 === 0) {
+      await interaction.editReply(
+        `📨 Sending DMs… (${sent + failed} / ${targets.size}) ✅ ${sent} sent, ❌ ${failed} failed`,
+      ).catch(() => {});
+    }
+    await new Promise((r) => setTimeout(r, 800));
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(sent > 0 ? 0x57f287 : 0xed4245)
+    .setTitle("📨 DM All — Complete")
+    .addFields(
+      { name: "✅ Sent", value: String(sent), inline: true },
+      { name: "❌ Failed", value: String(failed), inline: true },
+      { name: "👥 Total", value: String(targets.size), inline: true },
+    )
+    .setFooter({ text: "Failed DMs are usually members with DMs disabled" })
+    .setTimestamp();
+
+  await interaction.editReply({ content: "", embeds: [embed] });
+}
+
+async function handleBackup(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!backupLink) {
+    await interaction.reply({
+      content: "⚠️ No backup link configured. Set the `BACKUP_LINK` environment variable on Railway.",
+      flags: 64,
+    });
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle("🔗 HyperCore X — Backup Server")
+    .setDescription(`If the main server goes down, join the backup:\n\n**${backupLink}**`)
+    .setFooter({ text: "HyperCore X • Stay connected" })
+    .setTimestamp();
+
+  await interaction.reply({ embeds: [embed] });
 }
