@@ -120,6 +120,16 @@ const sayCommand = new SlashCommandBuilder()
     o.setName("channel").setDescription("Channel to send to (defaults to current)").setRequired(false),
   );
 
+const dmuserCommand = new SlashCommandBuilder()
+  .setName("dmuser")
+  .setDescription("Send a DM to a specific member")
+  .addUserOption((o) =>
+    o.setName("user").setDescription("The member to DM").setRequired(true),
+  )
+  .addStringOption((o) =>
+    o.setName("message").setDescription("The message to send").setRequired(true),
+  );
+
 const dmallCommand = new SlashCommandBuilder()
   .setName("dmall")
   .setDescription("Send a DM to every non-bot member in the server")
@@ -164,6 +174,7 @@ const allCommands = [
   informationsendCommand,
   sayCommand,
   whitelistCommand,
+  dmuserCommand,
   dmallCommand,
   backupCommand,
 ].map((c) => c.toJSON());
@@ -295,6 +306,7 @@ export async function startBot(): Promise<void> {
       else if (interaction.commandName === "informationsend") await handleInformationSend(interaction);
       else if (interaction.commandName === "say") await handleSay(interaction, pendingSay);
       else if (interaction.commandName === "whitelist") await handleWhitelist(interaction);
+      else if (interaction.commandName === "dmuser") await handleDmUser(interaction);
       else if (interaction.commandName === "dmall") await handleDmAll(interaction);
       else if (interaction.commandName === "backup") await handleBackup(interaction);
     } catch (err) {
@@ -896,6 +908,35 @@ async function handleWhitelist(interaction: ChatInputCommandInteraction): Promis
       .setTimestamp();
 
     await interaction.reply({ embeds: [embed], flags: 64 });
+  }
+}
+
+async function handleDmUser(interaction: ChatInputCommandInteraction): Promise<void> {
+  const target = interaction.options.getUser("user", true);
+  const message = interaction.options.getString("message", true);
+
+  if (target.bot) {
+    await interaction.reply({ content: "❌ You can't DM a bot.", flags: 64 });
+    return;
+  }
+
+  try {
+    await target.send(message);
+    const embed = new EmbedBuilder()
+      .setColor(0x57f287)
+      .setTitle("✅ DM Sent")
+      .addFields(
+        { name: "Recipient", value: `${target} (${target.tag})`, inline: true },
+        { name: "Sent by", value: `${interaction.user}`, inline: true },
+        { name: "Message", value: message },
+      )
+      .setTimestamp();
+    await interaction.reply({ embeds: [embed], flags: 64 });
+  } catch {
+    await interaction.reply({
+      content: `❌ Could not DM ${target} — they likely have DMs disabled or have blocked the bot.`,
+      flags: 64,
+    });
   }
 }
 
