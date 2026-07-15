@@ -5,36 +5,92 @@ import {
   Routes,
   SlashCommandBuilder,
   EmbedBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ActionRowBuilder,
   ChatInputCommandInteraction,
+  ButtonInteraction,
+  PermissionFlagsBits,
+  ChannelType,
+  TextChannel,
 } from "discord.js";
 import { logger } from "../lib/logger";
-import { db, pool, vipClaimsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { pool } from "@workspace/db";
 
 const token = process.env["DISCORD_BOT_TOKEN"];
-const GAMEPASS_ID = "1640971769";
-const GAMEPASS_URL = `https://www.roblox.com/game-pass/${GAMEPASS_ID}/500`;
-const AVATAR_URL =
-  "https://raw.githubusercontent.com/zeyokx/hypercorex-promo-bot/main/assets/avatar.png";
-
 if (!token) throw new Error("DISCORD_BOT_TOKEN is required");
 
-const buyCommand = new SlashCommandBuilder()
-  .setName("buy")
-  .setDescription("Purchase access")
-  .addSubcommand((sub) =>
-    sub
-      .setName("vip")
-      .setDescription("Claim your VIP role by verifying your Roblox gamepass ownership")
-      .addStringOption((o) =>
-        o
-          .setName("roblox_username")
-          .setDescription("Your exact Roblox username")
-          .setRequired(true),
-      ),
+const QUESTIONS = [
+  "Why do you wanna be management?",
+  "Why should we trust you?",
+  "What makes you special?",
+  "What first change will you make?",
+  "What should you do if the owner makes a bad choice?",
+];
+
+interface TestSession {
+  guildId: string;
+  guildName: string;
+  requesterId: string;
+  requesterTag: string;
+  userId: string;
+  answers: string[];
+  currentQuestion: number;
+  dmChannelId: string;
+}
+
+const activeSessions = new Map<string, TestSession>();
+
+async function runMigrations(): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS test_channel_config (
+      guild_id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL
+    )
+  `);
+  logger.info("Migrations complete");
+}
+
+async function getTestChannel(guildId: string): Promise<string | null> {
+  const res = await pool.query(
+    "SELECT channel_id FROM test_channel_config WHERE guild_id = $1",
+    [guildId],
+  );
+  return res.rows[0]?.channel_id ?? null;
+}
+
+async function setTestChannel(guildId: string, channelId: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO test_channel_config (guild_id, channel_id)
+     VALUES ($1, $2)
+     ON CONFLICT (guild_id) DO UPDATE SET channel_id = $2`,
+    [guildId, channelId],
+  );
+}
+
+const testRequestCommand = new SlashCommandBuilder()
+  .setName("testrequest")
+  .setDescription("Send a management test to a user via DM")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .addUserOption((o) =>
+    o.setName("user").setDescription("The user to test").setRequired(true),
   );
 
-const allCommands = [buyCommand].map((c) => c.toJSON());
+const channelSetTestCommand = new SlashCommandBuilder()
+  .setName("channelsettest")
+  .setDescription("Set the channel where completed test results are posted")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .addChannelOption((o) =>
+    o
+      .setName("channel")
+      .setDescription("The channel to receive test results")
+      .setRequired(true)
+      .addChannelTypes(ChannelType.GuildText),
+  );
+
+const allCommands = [testRequestCommand, channelSetTestCommand].map((c) =>
+  c.toJSON(),
+);
 
 async function registerCommands(rest: REST, appId: string, guildId: string) {
   await rest.put(Routes.applicationGuildCommands(appId, guildId), {
@@ -43,47 +99,37 @@ async function registerCommands(rest: REST, appId: string, guildId: string) {
   logger.info({ guildId }, "Registered commands");
 }
 
-async function runMigrations(): Promise<void> {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS vip_claims (
-      id SERIAL PRIMARY KEY,
-      discord_user_id TEXT NOT NULL UNIQUE,
-      discord_user_tag TEXT NOT NULL,
-      roblox_username TEXT NOT NULL,
-      roblox_user_id TEXT NOT NULL,
-      guild_id TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT NOW() NOT NULL
-    )
-  `);
-  logger.info("Migrations complete");
-}
-
 export async function startBot(): Promise<void> {
   await runMigrations();
 
   const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMembers,
+      GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+    partials: ["CHANNEL" as never],
   });
 
-  client.once("ready", async (readyClient) => {
+  client.once("clientReady", async (readyClient) => {
     logger.info({ tag: readyClient.user.tag }, "Bot online");
 
+    const rest = new REST().setToken(token!);
+
     try {
-      const avatarRes = await fetch(AVATAR_URL, { signal: AbortSignal.timeout(10_000) });
-      const avatarBuffer = Buffer.from(await avatarRes.arrayBuffer());
-      await readyClient.user.edit({ username: "Creator EXH", avatar: avatarBuffer });
-      logger.info("Bot profile updated to Creator EXH");
+      await rest.put(Routes.applicationCommands(readyClient.user.id), { body: [] });
+      logger.info("Cleared all global commands");
     } catch (err) {
-      logger.warn({ err }, "Could not update bot profile — skipping");
+      logger.warn({ err }, "Could not clear global commands");
     }
 
-    const rest = new REST().setToken(token!);
     const guilds = await readyClient.guilds.fetch();
     for (const [guildId] of guilds) {
       try {
         await registerCommands(rest, readyClient.user.id, guildId);
       } catch (err) {
-        logger.error({ err, guildId }, "Failed to register commands");
+        logger.error({ err, guildId }, "Failed to register commands in guild");
       }
     }
   });
@@ -100,125 +146,341 @@ export async function startBot(): Promise<void> {
   client.on("error", (err) => logger.error({ err }, "Discord client error"));
 
   client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
     try {
-      if (interaction.commandName === "buy") await handleBuyVip(interaction);
+      if (interaction.isChatInputCommand()) {
+        if (interaction.commandName === "testrequest")
+          await handleTestRequest(interaction, client);
+        else if (interaction.commandName === "channelsettest")
+          await handleChannelSetTest(interaction);
+      } else if (interaction.isButton()) {
+        await handleButton(interaction as ButtonInteraction, client);
+      }
     } catch (err) {
-      logger.error({ err }, "Command error");
+      logger.error({ err }, "Interaction error");
     }
+  });
+
+  client.on("messageCreate", async (message) => {
+    if (message.author.bot || !message.channel.isDMBased()) return;
+    const session = activeSessions.get(message.author.id);
+    if (!session) return;
+    await handleTestAnswer(message.author.id, message.content, client, session);
   });
 
   await client.login(token);
 }
 
-async function handleBuyVip(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (interaction.options.getSubcommand() !== "vip") return;
+async function handleChannelSetTest(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const channel = interaction.options.getChannel("channel", true);
+  await setTestChannel(interaction.guildId!, channel.id);
 
-  const robloxUsername = interaction.options.getString("roblox_username", true).trim();
-  await interaction.deferReply({ flags: 64 });
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle("✅ Test Channel Set")
+    .setDescription(`Completed test results will now be sent to <#${channel.id}>.`)
+    .setTimestamp();
+  await interaction.reply({ embeds: [embed], flags: 64 });
+}
 
-  const existing = await db
-    .select()
-    .from(vipClaimsTable)
-    .where(eq(vipClaimsTable.discordUserId, interaction.user.id))
-    .limit(1);
+async function handleTestRequest(
+  interaction: ChatInputCommandInteraction,
+  client: Client,
+): Promise<void> {
+  const targetUser = interaction.options.getUser("user", true);
 
-  if (existing.length > 0) {
-    const embed = new EmbedBuilder()
-      .setColor(0xed4245)
-      .setTitle("❌ Already Claimed")
-      .setDescription(
-        `You already claimed VIP with Roblox account **${existing[0].robloxUsername}**.\n\nEach Discord account can only claim VIP once.`,
-      )
-      .setTimestamp();
-    await interaction.editReply({ embeds: [embed] });
+  if (targetUser.bot) {
+    await interaction.reply({ content: "❌ You cannot test a bot.", flags: 64 });
     return;
   }
 
-  let robloxUserId: number;
-  try {
-    const res = await fetch("https://users.roblox.com/v1/usernames/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ usernames: [robloxUsername], excludeBannedUsers: false }),
-      signal: AbortSignal.timeout(8_000),
+  if (activeSessions.has(targetUser.id)) {
+    await interaction.reply({
+      content: `❌ **${targetUser.tag}** already has an active test in progress.`,
+      flags: 64,
     });
-    const data = (await res.json()) as { data: { id: number; name: string }[] };
-    if (!data.data?.[0]) {
-      await interaction.editReply({
-        content: `❌ Roblox user **${robloxUsername}** was not found. Double-check your username and try again.`,
+    return;
+  }
+
+  const channelId = await getTestChannel(interaction.guildId!);
+  if (!channelId) {
+    await interaction.reply({
+      content:
+        "❌ No test result channel set. Run `/channelsettest` first to configure where results are sent.",
+      flags: 64,
+    });
+    return;
+  }
+
+  let dmChannel;
+  try {
+    dmChannel = await targetUser.createDM();
+    const introEmbed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle("📋 Management Test — Creator EXH")
+      .setDescription(
+        `You have been invited to take a management test by **${interaction.user.tag}** from **${interaction.guild!.name}**.\n\n` +
+          `There are **${QUESTIONS.length} questions**. Answer each one in this DM.\n` +
+          `Take your time — your answers matter.\n\n` +
+          `**Starting now…**`,
+      )
+      .setTimestamp();
+
+    await dmChannel.send({ embeds: [introEmbed] });
+  } catch {
+    await interaction.reply({
+      content: `❌ Could not DM **${targetUser.tag}**. They may have DMs disabled.`,
+      flags: 64,
+    });
+    return;
+  }
+
+  const session: TestSession = {
+    guildId: interaction.guildId!,
+    guildName: interaction.guild!.name,
+    requesterId: interaction.user.id,
+    requesterTag: interaction.user.tag,
+    userId: targetUser.id,
+    answers: [],
+    currentQuestion: 0,
+    dmChannelId: dmChannel.id,
+  };
+  activeSessions.set(targetUser.id, session);
+
+  await sendQuestion(targetUser.id, client, session);
+
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle("✅ Test Sent")
+    .setDescription(
+      `A management test has been sent to **${targetUser.tag}** via DM.\nResults will appear in <#${channelId}> when they finish.`,
+    )
+    .setTimestamp();
+  await interaction.reply({ embeds: [embed], flags: 64 });
+}
+
+async function sendQuestion(
+  userId: string,
+  client: Client,
+  session: TestSession,
+): Promise<void> {
+  const q = QUESTIONS[session.currentQuestion];
+  const user = await client.users.fetch(userId).catch(() => null);
+  if (!user) return;
+
+  const dmChannel = await user.createDM().catch(() => null);
+  if (!dmChannel) return;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`Question ${session.currentQuestion + 1} / ${QUESTIONS.length}`)
+    .setDescription(`**${q}**`)
+    .setFooter({ text: "Type your answer in this DM" })
+    .setTimestamp();
+
+  await dmChannel.send({ embeds: [embed] });
+}
+
+async function handleTestAnswer(
+  userId: string,
+  answer: string,
+  client: Client,
+  session: TestSession,
+): Promise<void> {
+  session.answers.push(answer.slice(0, 1000));
+  session.currentQuestion += 1;
+
+  if (session.currentQuestion < QUESTIONS.length) {
+    await sendQuestion(userId, client, session);
+    return;
+  }
+
+  activeSessions.delete(userId);
+
+  const user = await client.users.fetch(userId).catch(() => null);
+
+  const dmChannel = await user?.createDM().catch(() => null);
+  if (dmChannel) {
+    const doneEmbed = new EmbedBuilder()
+      .setColor(0x57f287)
+      .setTitle("✅ Test Complete!")
+      .setDescription(
+        "You have answered all the questions. Your responses have been submitted for review.\nYou will be notified of the decision.",
+      )
+      .setTimestamp();
+    await dmChannel.send({ embeds: [doneEmbed] });
+  }
+
+  const channelId = await getTestChannel(session.guildId);
+  if (!channelId) return;
+
+  const guild = await client.guilds.fetch(session.guildId).catch(() => null);
+  if (!guild) return;
+
+  const resultChannel = (await guild.channels
+    .fetch(channelId)
+    .catch(() => null)) as TextChannel | null;
+  if (!resultChannel) return;
+
+  const answersText = QUESTIONS.map(
+    (q, i) => `**Q${i + 1}: ${q}**\n${session.answers[i] ?? "*(no answer)*"}`,
+  ).join("\n\n");
+
+  const resultEmbed = new EmbedBuilder()
+    .setColor(0xfee75c)
+    .setTitle("📋 Management Test Result")
+    .setDescription(
+      `**Applicant:** <@${userId}> (${user?.tag ?? userId})\n` +
+        `**Requested by:** <@${session.requesterId}> (${session.requesterTag})\n\n` +
+        answersText,
+    )
+    .setFooter({ text: "Creator EXH • Management Test" })
+    .setTimestamp();
+
+  const acceptBtn = new ButtonBuilder()
+    .setCustomId(`test_accept:${userId}`)
+    .setLabel("Accept")
+    .setStyle(ButtonStyle.Success)
+    .setEmoji("✅");
+
+  const declineBtn = new ButtonBuilder()
+    .setCustomId(`test_decline:${userId}`)
+    .setLabel("Decline")
+    .setStyle(ButtonStyle.Danger)
+    .setEmoji("❌");
+
+  const ticketBtn = new ButtonBuilder()
+    .setCustomId(`test_ticket:${userId}`)
+    .setLabel("Create Ticket")
+    .setStyle(ButtonStyle.Secondary)
+    .setEmoji("🎫");
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    acceptBtn,
+    declineBtn,
+    ticketBtn,
+  );
+
+  await resultChannel.send({ embeds: [resultEmbed], components: [row] });
+}
+
+async function handleButton(
+  interaction: ButtonInteraction,
+  client: Client,
+): Promise<void> {
+  const [action, targetUserId] = interaction.customId.split(":");
+  if (!targetUserId) return;
+
+  const targetUser = await client.users.fetch(targetUserId).catch(() => null);
+
+  if (action === "test_accept") {
+    const embed = new EmbedBuilder()
+      .setColor(0x57f287)
+      .setTitle("✅ Accepted")
+      .setDescription(
+        `<@${targetUserId}> has been **accepted** by <@${interaction.user.id}>.`,
+      )
+      .setTimestamp();
+    await interaction.update({ embeds: [interaction.message.embeds[0], embed], components: [] });
+
+    if (targetUser) {
+      const dmEmbed = new EmbedBuilder()
+        .setColor(0x57f287)
+        .setTitle("🎉 Application Accepted!")
+        .setDescription(
+          `Congratulations! Your management application for **${interaction.guild?.name}** has been **accepted**.\nWelcome to the team!`,
+        )
+        .setTimestamp();
+      await targetUser.send({ embeds: [dmEmbed] }).catch(() => {});
+    }
+  } else if (action === "test_decline") {
+    const embed = new EmbedBuilder()
+      .setColor(0xed4245)
+      .setTitle("❌ Declined")
+      .setDescription(
+        `<@${targetUserId}> has been **declined** by <@${interaction.user.id}>.`,
+      )
+      .setTimestamp();
+    await interaction.update({ embeds: [interaction.message.embeds[0], embed], components: [] });
+
+    if (targetUser) {
+      const dmEmbed = new EmbedBuilder()
+        .setColor(0xed4245)
+        .setTitle("Application Declined")
+        .setDescription(
+          `Your management application for **${interaction.guild?.name}** was not accepted at this time.\nThank you for applying.`,
+        )
+        .setTimestamp();
+      await targetUser.send({ embeds: [dmEmbed] }).catch(() => {});
+    }
+  } else if (action === "test_ticket") {
+    if (!interaction.guild) return;
+
+    const existingChannel = interaction.guild.channels.cache.find(
+      (c) => c.name === `ticket-${targetUserId}`,
+    );
+    if (existingChannel) {
+      await interaction.reply({
+        content: `❌ A ticket already exists: <#${existingChannel.id}>`,
+        flags: 64,
       });
       return;
     }
-    robloxUserId = data.data[0].id;
-  } catch {
-    await interaction.editReply({
-      content: "❌ Could not reach Roblox servers. Please try again in a moment.",
-    });
-    return;
-  }
 
-  let ownsGamepass = false;
-  try {
-    const res = await fetch(
-      `https://inventory.roblox.com/v1/users/${robloxUserId}/items/GamePass/${GAMEPASS_ID}`,
-      { signal: AbortSignal.timeout(8_000) },
-    );
-    const data = (await res.json()) as { data: unknown[] };
-    ownsGamepass = Array.isArray(data.data) && data.data.length > 0;
-  } catch {
-    await interaction.editReply({
-      content: "❌ Could not check your Roblox inventory. Make sure your inventory is **public** on Roblox, then try again.",
-    });
-    return;
-  }
+    let ticketChannel: TextChannel;
+    try {
+      ticketChannel = (await interaction.guild.channels.create({
+        name: `ticket-${targetUser?.username ?? targetUserId}`,
+        type: ChannelType.GuildText,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.roles.everyone,
+            deny: [PermissionFlagsBits.ViewChannel],
+          },
+          {
+            id: targetUserId,
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.SendMessages,
+              PermissionFlagsBits.ReadMessageHistory,
+            ],
+          },
+          {
+            id: interaction.user.id,
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.SendMessages,
+              PermissionFlagsBits.ReadMessageHistory,
+            ],
+          },
+        ],
+      })) as TextChannel;
+    } catch {
+      await interaction.reply({
+        content: "❌ Failed to create ticket channel. Make sure I have the **Manage Channels** permission.",
+        flags: 64,
+      });
+      return;
+    }
 
-  if (!ownsGamepass) {
-    const embed = new EmbedBuilder()
-      .setColor(0xfee75c)
-      .setTitle("🛒 Gamepass Not Owned")
+    const ticketEmbed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle("🎫 Management Ticket")
       .setDescription(
-        `Your Roblox account **${robloxUsername}** does not own the VIP gamepass yet.\n\n**👉 Purchase it here:**\n${GAMEPASS_URL}\n\nAfter buying, run \`/buy vip\` again.\n\n> Make sure your Roblox inventory is set to **Public** so we can verify ownership.`,
+        `Hello <@${targetUserId}>! This ticket was created to discuss your management application.\n\n` +
+          `<@${interaction.user.id}> will be with you shortly.`,
       )
       .setTimestamp();
-    await interaction.editReply({ embeds: [embed] });
-    return;
+    await ticketChannel.send({ content: `<@${targetUserId}> <@${interaction.user.id}>`, embeds: [ticketEmbed] });
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle("🎫 Ticket Created")
+      .setDescription(
+        `Ticket created for <@${targetUserId}>: <#${ticketChannel.id}>`,
+      )
+      .setTimestamp();
+    await interaction.update({ embeds: [interaction.message.embeds[0], embed], components: [] });
   }
-
-  await db.insert(vipClaimsTable).values({
-    discordUserId: interaction.user.id,
-    discordUserTag: interaction.user.tag,
-    robloxUsername,
-    robloxUserId: String(robloxUserId),
-    guildId: interaction.guildId ?? "",
-  });
-
-  const vipRoleId = process.env["VIP_ROLE_ID"];
-  if (vipRoleId && interaction.guild) {
-    const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-    if (member) await member.roles.add(vipRoleId).catch(() => {});
-  }
-
-  let avatarUrl: string | undefined;
-  try {
-    const thumbRes = await fetch(
-      `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${robloxUserId}&size=150x150&format=Png`,
-      { signal: AbortSignal.timeout(5_000) },
-    );
-    const thumbData = (await thumbRes.json()) as { data: { imageUrl: string }[] };
-    avatarUrl = thumbData.data?.[0]?.imageUrl;
-  } catch {}
-
-  const embed = new EmbedBuilder()
-    .setColor(0xffd700)
-    .setTitle("🌟 VIP Activated!")
-    .setDescription(
-      `Welcome to VIP, ${interaction.user}!\n\nYour Roblox account **${robloxUsername}** has been verified.\nYour VIP access is now active — enjoy!`,
-    )
-    .setFooter({ text: "Creator EXH • VIP" })
-    .setTimestamp();
-
-  if (avatarUrl) embed.setThumbnail(avatarUrl);
-
-  await interaction.editReply({ embeds: [embed] });
 }
